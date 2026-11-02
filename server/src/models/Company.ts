@@ -1,11 +1,11 @@
-import { Schema, model, Document } from 'mongoose';
+import { Schema, model, Document, Types } from 'mongoose';
 
 export interface ICompany extends Document {
   name: string;
-  slug: string;
   description?: string;
-  logoUrl?: string;
-  settings: Record<string, any>;
+  profileUrl?: string;
+  documents: Types.ObjectId[];
+  agents: Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -13,10 +13,10 @@ export interface ICompany extends Document {
 const CompanySchema = new Schema<ICompany>(
   {
     name: { type: String, required: true, trim: true },
-    slug: { type: String, required: true, unique: true, lowercase: true, trim: true, index: true },
     description: { type: String, trim: true },
-    logoUrl: { type: String, trim: true },
-    settings: { type: Schema.Types.Mixed, default: {} },
+    profileUrl: { type: String, trim: true },
+    documents: [{ type: Schema.Types.ObjectId, ref: 'Document' }],
+    agents: [{ type: Schema.Types.ObjectId, ref: 'User' }],
   },
   { timestamps: true }
 );

@@ -3,6 +3,7 @@ import { Schema, model, Document } from 'mongoose';
 export enum UserStatus {
   ACTIVE = 'ACTIVE',
   SUSPENDED = 'SUSPENDED',
+  PENDING = 'PENDING',
 }
 
 export interface IUser extends Document {
