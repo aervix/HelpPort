@@ -12,7 +12,7 @@ import {
 const computeChecksum = (buffer: Buffer): string => {
   return crypto.createHash("sha256").update(buffer).digest("hex");
 };
-
+computeChecksum;
 const notifyAiService = (
   endpoint: string,
   payload: Record<string, any>,
@@ -74,8 +74,6 @@ export const uploadDocument = async (
       return;
     }
 
-    // 2. Upload to Cloudinary using service helper
-    // Accepts file.path (diskStorage) or file.buffer (memoryStorage) depending on your service setup
     const targetFile = file.path || file.buffer;
     const uploadResult = await uploadOnCloudinary(
       targetFile,
@@ -91,7 +89,7 @@ export const uploadDocument = async (
       return;
     }
 
-    // 3. Persist document metadata
+
     const document = new Document({
       companyId: new Types.ObjectId(companyId),
       uploadedBy: new Types.ObjectId(userId),
@@ -105,7 +103,7 @@ export const uploadDocument = async (
 
     await document.save({ session });
 
-    // 4. Attach document reference to company
+
     await Company.findByIdAndUpdate(
       companyId,
       { $addToSet: { documents: document._id } },
@@ -139,9 +137,7 @@ export const uploadDocument = async (
   }
 };
 
-/**
- * Returns paginated document list with optional status filtering.
- */
+
 export const getCompanyDocuments = async (
   req: Request,
   res: Response,
