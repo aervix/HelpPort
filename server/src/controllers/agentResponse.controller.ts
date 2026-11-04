@@ -1,19 +1,11 @@
 import { Request, Response } from "express";
 import { Types } from "mongoose";
-import { AgentResponse } from "../models/AgentResponse";
-import { UserMessage } from "../models/UserMessage";
-import { Company } from "../models/Company";
+import { AgentResponse } from "../models/AgentResponse.ts";
+import { UserMessage } from "../models/UserMessage.ts";
+import { Company } from "../models/Company.ts";
+import { AuthenticatedRequest } from "../types/types.ts";
 
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-  };
-}
 
-/**
- * Allows a verified agent of that company to respond to a customer query.
- */
 export const createAgentReply = async (
   req: AuthenticatedRequest,
   res: Response,
@@ -47,7 +39,7 @@ export const createAgentReply = async (
       return;
     }
 
-    // Verify the user is an active agent of the target company
+   
     const company = await Company.findById(userMessage.companyId);
     if (!company) {
       res.status(404).json({ success: false, message: "Company not found" });
@@ -91,15 +83,13 @@ export const createAgentReply = async (
   }
 };
 
-/**
- * Retrieves all human agent replies linked to a specific user message.
- */
+
 export const getAgentRepliesByMessage = async (
   req: Request,
   res: Response,
 ): Promise<void> => {
   try {
-    const { userMessageId } = req.params;
+    const { userMessageId } = req.params as { userMessageId : string};
 
     if (!Types.ObjectId.isValid(userMessageId)) {
       res
@@ -129,16 +119,14 @@ export const getAgentRepliesByMessage = async (
   }
 };
 
-/**
- * Allows the authoring agent to edit their response.
- */
+
 export const updateAgentReply = async (
   req: AuthenticatedRequest,
   res: Response,
 ): Promise<void> => {
   try {
     const agentId = req.user?.id;
-    const { responseId } = req.params;
+    const { responseId } = req.params as {responseId: string};
     const { responseText } = req.body;
 
     if (
