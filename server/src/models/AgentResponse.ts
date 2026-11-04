@@ -1,8 +1,8 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
 export interface IAgentResponse extends Document {
-  userId: Types.ObjectId;       // Customer receiving the response
-  agentId: Types.ObjectId;      // Support agent providing the response
+  userId: Types.ObjectId;       
+  agentId: Types.ObjectId;      
   companyId: Types.ObjectId;
   userMessageId: Types.ObjectId;
   responseText: string;
