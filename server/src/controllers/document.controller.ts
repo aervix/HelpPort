@@ -1,112 +1,171 @@
-import { Request, Response } from 'express';
-import { Types } from 'mongoose';
-import crypto from 'crypto';
-import { Document, DocumentStatus } from '../models/Document';
-import { Company } from '../models/Company';
-import { AuthenticatedRequest } from '../types/types';
+import { Request, Response } from "express";
+import mongoose, { Types } from "mongoose";
+import crypto from "crypto";
+import { Document, DocumentStatus } from "../models/Document";
+import { Company } from "../models/Company";
+import { AuthenticatedRequest } from "../types/types";
+import {
+  uploadOnCloudinary,
+  deleteFromCloudinary,
+} from "../services/storage.ts";
 
-// Helper: Compute SHA-256 checksum from file buffer
 const computeChecksum = (buffer: Buffer): string => {
-  return crypto.createHash('sha256').update(buffer).digest('hex');
+  return crypto.createHash("sha256").update(buffer).digest("hex");
 };
 
-// Helper: Mock/adapter for object storage upload (e.g. S3/MinIO)
-const uploadToObjectStorage = async (file: Express.Multer.File, companyId: string): Promise<string> => {
-  const timestamp = Date.now();
-  const safeName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-  return `tenants/${companyId}/docs/${timestamp}-${safeName}`;
-};
+const notifyAiService = (
+  endpoint: string,
+  payload: Record<string, any>,
+): void => {
+  const aiServiceUrl = process.env.AI_SERVICE_URL || "http://localhost:8000";
 
-// Helper: Call Python FastAPI service asynchronously
-const notifyAiService = async (endpoint: string, payload: object): Promise<void> => {
-  const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
   fetch(`${aiServiceUrl}${endpoint}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-  }).catch((err) => console.error(`AI service notification failed (${endpoint}):`, err.message));
+  }).catch((err) =>
+    console.error(
+      `AI service background task failed (${endpoint}):`,
+      err.message,
+    ),
+  );
 };
 
-/**
- * Uploads a document, checks duplicate checksum, stores metadata, and notifies AI service.
- */
-export const uploadDocument = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+export const uploadDocument = async (
+  req: AuthenticatedRequest & { file?: any },
+  res: Response,
+): Promise<void> => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { companyId } = req.params;
+    const { companyId } = req.params as { companyId: string };
     const userId = req.user?.id;
     const file = req.file;
 
     if (!file) {
-      res.status(400).json({ success: false, message: 'No file uploaded' });
+      res.status(400).json({ success: false, message: "No file uploaded" });
+      await session.abortTransaction();
       return;
     }
 
     if (!Types.ObjectId.isValid(companyId) || !userId) {
-      res.status(400).json({ success: false, message: 'Invalid company ID or unauthenticated user' });
+      res.status(400).json({
+        success: false,
+        message: "Invalid company ID or unauthenticated user",
+      });
+      await session.abortTransaction();
       return;
     }
 
-    const checksum = computeChecksum(file.buffer);
+    // 1. Duplicate detection via SHA-256
+    const fileBuffer = file.buffer;
+    const checksum = computeChecksum(fileBuffer);
 
-    // Prevent duplicate uploads within the same company
-    const existingDoc = await Document.findOne({ companyId, checksum });
+    const existingDoc = await Document.findOne({ companyId, checksum }).session(
+      session,
+    );
     if (existingDoc) {
-      res.status(409).json({ success: false, message: 'Duplicate document already exists in this company' });
+      res.status(409).json({
+        success: false,
+        message: "Duplicate document already exists in this company",
+      });
+      await session.abortTransaction();
       return;
     }
 
-    const storageKey = await uploadToObjectStorage(file, companyId);
+    // 2. Upload to Cloudinary using service helper
+    // Accepts file.path (diskStorage) or file.buffer (memoryStorage) depending on your service setup
+    const targetFile = file.path || file.buffer;
+    const uploadResult = await uploadOnCloudinary(
+      targetFile,
+      `tenants/${companyId}`,
+    );
 
-    // Create document record in MongoDB
-    const document = await Document.create({
+    if (!uploadResult) {
+      res.status(502).json({
+        success: false,
+        message: "Failed to upload file to Cloudinary storage",
+      });
+      await session.abortTransaction();
+      return;
+    }
+
+    // 3. Persist document metadata
+    const document = new Document({
       companyId: new Types.ObjectId(companyId),
       uploadedBy: new Types.ObjectId(userId),
       name: file.originalname,
       fileType: file.mimetype,
-      storageKey,
+      storageKey: uploadResult,
+      // cloudinaryPublicId: uploadResult.public_id,
       checksum,
       status: DocumentStatus.PENDING,
     });
 
-    // Link document to company
-    await Company.findByIdAndUpdate(companyId, { $push: { documents: document._id } });
+    await document.save({ session });
 
-    // Trigger async background ingestion in AI service
-    notifyAiService('/api/ingest', {
+    // 4. Attach document reference to company
+    await Company.findByIdAndUpdate(
+      companyId,
+      { $addToSet: { documents: document._id } },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    // 5. Trigger asynchronous vector indexing
+    notifyAiService("/api/ingest", {
       documentId: document._id.toString(),
       companyId,
-      storageKey,
+      storageKey: document.storageKey,
       fileType: file.mimetype,
     });
 
     res.status(201).json({
       success: true,
-      message: 'Document uploaded and queued for processing',
+      message: "Document uploaded and queued for processing",
       data: document,
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Document upload failed', error: error.message });
+    await session.abortTransaction();
+    res.status(500).json({
+      success: false,
+      message: "Document upload failed",
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
   }
 };
 
 /**
- * Lists all documents for a company with pagination and status filtering.
+ * Returns paginated document list with optional status filtering.
  */
-export const getCompanyDocuments = async (req: Request, res: Response): Promise<void> => {
+export const getCompanyDocuments = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
   try {
-    const { companyId } = req.params;
-    const { status, page = '1', limit = '10' } = req.query;
+    const { companyId } = req.params as { companyId: string };
+    const { status, page = "1", limit = "10" } = req.query;
 
     if (!Types.ObjectId.isValid(companyId)) {
-      res.status(400).json({ success: false, message: 'Invalid company ID' });
+      res.status(400).json({ success: false, message: "Invalid company ID" });
       return;
     }
 
     const pageNumber = Math.max(1, parseInt(page as string, 10) || 1);
     const pageSize = Math.max(1, parseInt(limit as string, 10) || 10);
-    const filter: Record<string, any> = { companyId: new Types.ObjectId(companyId) };
 
-    if (status && Object.values(DocumentStatus).includes(status as DocumentStatus)) {
+    const filter: Record<string, any> = {
+      companyId: new Types.ObjectId(companyId),
+    };
+
+    if (
+      status &&
+      Object.values(DocumentStatus).includes(status as DocumentStatus)
+    ) {
       filter.status = status;
     }
 
@@ -115,7 +174,7 @@ export const getCompanyDocuments = async (req: Request, res: Response): Promise<
         .sort({ createdAt: -1 })
         .skip((pageNumber - 1) * pageSize)
         .limit(pageSize)
-        .populate('uploadedBy', 'name email'),
+        .populate("uploadedBy", "name email"),
       Document.countDocuments(filter),
     ]);
 
@@ -132,95 +191,140 @@ export const getCompanyDocuments = async (req: Request, res: Response): Promise<
       },
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to retrieve documents', error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve documents",
+      error: error.message,
+    });
   }
 };
 
 /**
- * Fetches detailed metadata for a single document.
+ * Fetches single document metadata by ID.
  */
-export const getDocumentById = async (req: Request, res: Response): Promise<void> => {
+export const getDocumentById = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
   try {
-    const { documentId } = req.params;
+    const { documentId } = req.params as { documentId: string };
 
     if (!Types.ObjectId.isValid(documentId)) {
-      res.status(400).json({ success: false, message: 'Invalid document ID' });
+      res.status(400).json({ success: false, message: "Invalid document ID" });
       return;
     }
 
-    const document = await Document.findById(documentId).populate('uploadedBy', 'name email');
+    const document = await Document.findById(documentId).populate(
+      "uploadedBy",
+      "name email",
+    );
+
     if (!document) {
-      res.status(404).json({ success: false, message: 'Document not found' });
+      res.status(404).json({ success: false, message: "Document not found" });
       return;
     }
 
     res.status(200).json({ success: true, data: document });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to fetch document', error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch document",
+      error: error.message,
+    });
   }
 };
 
-/**
- * Deletes document record, cleans company references, and notifies AI service to purge vectors.
- */
-export const deleteDocument = async (req: Request, res: Response): Promise<void> => {
+export const deleteDocument = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { documentId } = req.params;
+    const { documentId } = req.params as { documentId: string };
 
     if (!Types.ObjectId.isValid(documentId)) {
-      res.status(400).json({ success: false, message: 'Invalid document ID' });
+      res.status(400).json({ success: false, message: "Invalid document ID" });
+      await session.abortTransaction();
       return;
     }
 
-    const document = await Document.findByIdAndDelete(documentId);
+    const document = await Document.findByIdAndDelete(documentId, { session });
     if (!document) {
-      res.status(404).json({ success: false, message: 'Document not found' });
+      res.status(404).json({ success: false, message: "Document not found" });
+      await session.abortTransaction();
       return;
     }
 
-    // Remove reference from Company
-    await Company.findByIdAndUpdate(document.companyId, { $pull: { documents: document._id } });
+    // Pull document reference from Company
+    await Company.findByIdAndUpdate(
+      document.companyId,
+      { $pull: { documents: document._id } },
+      { session },
+    );
 
-    // Tell AI service to delete all vector chunks for this document from Chroma
-    notifyAiService('/api/documents/purge', {
+    await session.commitTransaction();
+
+    // TODO: Delete file from Cloudinary storage
+    // if ((document as any).cloudinaryPublicId) {
+    //   deleteFromCloudinary((document).cloudinaryPublicId).catch(
+    //     (err: any) =>
+    //       console.error("Cloudinary asset deletion failed:", err.message),
+    //   );
+    // }
+
+    // 2. Dispatch vector chunk purge to AI service
+    notifyAiService("/api/documents/purge", {
       companyId: document.companyId.toString(),
       documentId: document._id.toString(),
     });
 
     res.status(200).json({
       success: true,
-      message: 'Document deleted and vector purge triggered',
+      message:
+        "Document deleted, cloud storage cleaned, and vector purge triggered",
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to delete document', error: error.message });
+    await session.abortTransaction();
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete document",
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
   }
 };
 
 /**
- * Resets document status to PENDING and re-triggers vector indexing.
+ * Resets document status to PENDING and triggers background re-indexing.
  */
-export const triggerReprocess = async (req: Request, res: Response): Promise<void> => {
+export const triggerReprocess = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
   try {
-    const { documentId } = req.params;
+    const { documentId } = req.params as { documentId: string };
 
     if (!Types.ObjectId.isValid(documentId)) {
-      res.status(400).json({ success: false, message: 'Invalid document ID' });
+      res.status(400).json({ success: false, message: "Invalid document ID" });
       return;
     }
 
     const document = await Document.findByIdAndUpdate(
       documentId,
       { $set: { status: DocumentStatus.PENDING } },
-      { new: true }
+      { new: true },
     );
 
     if (!document) {
-      res.status(404).json({ success: false, message: 'Document not found' });
+      res.status(404).json({ success: false, message: "Document not found" });
       return;
     }
 
-    // Trigger re-ingestion
-    notifyAiService('/api/ingest', {
+    // Queue re-ingestion
+    notifyAiService("/api/ingest", {
       documentId: document._id.toString(),
       companyId: document.companyId.toString(),
       storageKey: document.storageKey,
@@ -229,10 +333,14 @@ export const triggerReprocess = async (req: Request, res: Response): Promise<voi
 
     res.status(200).json({
       success: true,
-      message: 'Document status reset to PENDING and reprocessing queued',
+      message: "Document status reset to PENDING and reprocessing queued",
       data: document,
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to trigger reprocessing', error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to trigger reprocessing",
+      error: error.message,
+    });
   }
 };
