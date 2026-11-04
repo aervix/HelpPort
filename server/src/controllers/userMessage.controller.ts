@@ -1,46 +1,46 @@
-import { Request, Response } from 'express';
-import { Types } from 'mongoose';
-import { UserMessage } from '../models/UserMessage';
-import { AIResponse } from '../models/AIResponse';
-import { AgentResponse } from '../models/AgentResponse';
+import { Request, Response } from "express";
+import { Types } from "mongoose";
+import { UserMessage } from "../models/UserMessage";
+import { AIResponse } from "../models/AIResponse";
+import { AgentResponse } from "../models/AgentResponse";
+import { AuthenticatedRequest } from "../types/types";
 
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-  };
-}
 
-// Helper: Asynchronously triggers the AI RAG service
-const dispatchToAiService = async (payload: {
+type AIRequestpayload = {
   userMessageId: string;
   companyId: string;
   userId: string;
   queryText: string;
-}): Promise<void> => {
-  const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
-  fetch(`${aiServiceUrl}/api/generate-response`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  }).catch((err) => console.error('AI pipeline dispatch failed:', err.message));
 };
 
-/**
- * Accepts a user query, stores UserMessage, and dispatches it to the AI pipeline.
- */
-export const createMessage = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+const dispatchToAiService = async (
+  payload: AIRequestpayload,
+): Promise<string> => {
+  const aiServiceUrl = process.env.AI_SERVICE_URL || "http://localhost:8000";
+  return "Message In Progress";
+};
+
+
+export const createMessage = async (
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> => {
   try {
     const userId = req.user?.id;
     const { companyId, queryText } = req.body;
 
     if (!userId || !companyId || !queryText?.trim()) {
-      res.status(400).json({ success: false, message: 'companyId and queryText are required' });
+      res.status(400).json({
+        success: false,
+        message: "companyId and queryText are required",
+      });
       return;
     }
 
     if (!Types.ObjectId.isValid(companyId)) {
-      res.status(400).json({ success: false, message: 'Invalid company ID format' });
+      res
+        .status(400)
+        .json({ success: false, message: "Invalid company ID format" });
       return;
     }
 
@@ -50,8 +50,8 @@ export const createMessage = async (req: AuthenticatedRequest, res: Response): P
       queryText: queryText.trim(),
     });
 
-    // Fire-and-forget dispatch to the AI response pipeline
-    dispatchToAiService({
+    // dispatch to the AI response pipeline
+    const AIResponse = dispatchToAiService({
       userMessageId: message._id.toString(),
       companyId,
       userId,
@@ -60,24 +60,32 @@ export const createMessage = async (req: AuthenticatedRequest, res: Response): P
 
     res.status(201).json({
       success: true,
-      message: 'Message queued and sent to AI pipeline',
+      message: "Message queued and sent to AI pipeline",
+      AIResponse,
       data: message,
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to create message', error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to create message",
+      error: error.message,
+    });
   }
 };
 
-/**
- * Lists all queries submitted to a company with pagination (for agent dashboards).
- */
-export const getMessagesByCompany = async (req: Request, res: Response): Promise<void> => {
+
+export const getMessagesByCompany = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
   try {
-    const { companyId } = req.params;
-    const { page = '1', limit = '15' } = req.query;
+    const { companyId } = req.params as {companyId : string};
+    const { page = "1", limit = "15" } = req.query;
 
     if (!Types.ObjectId.isValid(companyId)) {
-      res.status(400).json({ success: false, message: 'Invalid company ID format' });
+      res
+        .status(400)
+        .json({ success: false, message: "Invalid company ID format" });
       return;
     }
 
@@ -89,7 +97,7 @@ export const getMessagesByCompany = async (req: Request, res: Response): Promise
         .sort({ createdAt: -1 })
         .skip((pageNum - 1) * limitNum)
         .limit(limitNum)
-        .populate('userId', 'name email'),
+        .populate("userId", "name email"),
       UserMessage.countDocuments({ companyId: new Types.ObjectId(companyId) }),
     ]);
 
@@ -106,20 +114,28 @@ export const getMessagesByCompany = async (req: Request, res: Response): Promise
       },
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to retrieve company messages', error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve company messages",
+      error: error.message,
+    });
   }
 };
 
-/**
- * Retrieves a customer's query history within a specific company.
- */
-export const getUserHistory = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+
+export const getUserHistory = async (
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> => {
   try {
     const userId = req.user?.id;
-    const { companyId } = req.params;
+    const { companyId } = req.params as { companyId: string };
 
     if (!userId || !Types.ObjectId.isValid(companyId)) {
-      res.status(400).json({ success: false, message: 'Valid companyId and authentication required' });
+      res.status(400).json({
+        success: false,
+        message: "Valid companyId and authentication required",
+      });
       return;
     }
 
@@ -133,32 +149,45 @@ export const getUserHistory = async (req: AuthenticatedRequest, res: Response): 
       data: messages,
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to retrieve user history', error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve user history",
+      error: error.message,
+    });
   }
 };
 
-/**
- * Fetches an individual user message and its corresponding AI or Agent responses.
- */
-export const getMessageById = async (req: Request, res: Response): Promise<void> => {
+
+export const getMessageById = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
   try {
-    const { messageId } = req.params;
+    const { messageId } = req.params as {messageId : string};
 
     if (!Types.ObjectId.isValid(messageId)) {
-      res.status(400).json({ success: false, message: 'Invalid message ID format' });
+      res
+        .status(400)
+        .json({ success: false, message: "Invalid message ID format" });
       return;
     }
 
-    const message = await UserMessage.findById(messageId).populate('userId', 'name email');
+    const message = await UserMessage.findById(messageId).populate(
+      "userId",
+      "name email",
+    );
     if (!message) {
-      res.status(404).json({ success: false, message: 'Message not found' });
+      res.status(404).json({ success: false, message: "Message not found" });
       return;
     }
 
     // Fetch linked AI and Agent replies concurrently
     const [aiResponse, agentResponses] = await Promise.all([
       AIResponse.findOne({ userMessageId: message._id }),
-      AgentResponse.find({ userMessageId: message._id }).populate('agentId', 'name email'),
+      AgentResponse.find({ userMessageId: message._id }).populate(
+        "agentId",
+        "name email",
+      ),
     ]);
 
     res.status(200).json({
@@ -170,6 +199,10 @@ export const getMessageById = async (req: Request, res: Response): Promise<void>
       },
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to fetch message details', error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch message details",
+      error: error.message,
+    });
   }
 };

@@ -3,13 +3,7 @@ import { Types } from 'mongoose';
 import crypto from 'crypto';
 import { Document, DocumentStatus } from '../models/Document';
 import { Company } from '../models/Company';
-
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-  };
-}
+import { AuthenticatedRequest } from '../types/types';
 
 // Helper: Compute SHA-256 checksum from file buffer
 const computeChecksum = (buffer: Buffer): string => {

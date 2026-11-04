@@ -2,13 +2,7 @@ import { Request, Response } from 'express';
 import { Types } from 'mongoose';
 import { Company } from '../models/Company';
 import { User, UserStatus } from '../models/User';
-
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-  };
-}
+import { AuthenticatedRequest } from '../types/types';
 
 
 export const createCompany = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
