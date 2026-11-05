@@ -293,9 +293,7 @@ export const deleteDocument = async (
   }
 };
 
-/**
- * Resets document status to PENDING and triggers background re-indexing.
- */
+
 export const triggerReprocess = async (
   req: Request,
   res: Response,
