@@ -1,31 +1,38 @@
-import { Request, Response } from "express";
+import { Request, Response, CookieOptions } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { User, UserStatus } from "../models/User";
 import { AuthenticatedRequest } from "../types/types";
 
-const JWT_SECRET = process.env.JWT_SECRET || "nexora_default_secret_key";
+const JWT_SECRET =
+  process.env.JWT_SECRET ||
+  process.env.JWT_SECRET_KEY ||
+  "nexora_default_secret_key";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
 
-// Helper: Generate JWT token
+// Cookie security configuration
+const cookieOptions: CookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
+};
+
 const signToken = (userId: string, email: string): string => {
-  return jwt.sign({ id: userId, email }, JWT_SECRET, {
+  return jwt.sign({ userId, email }, JWT_SECRET as any, {
     expiresIn: JWT_EXPIRES_IN as any,
   });
 };
-
 
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
     const { name, email, password } = req.body;
 
     if (!name?.trim() || !email?.trim() || !password) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Name, email, and password are required",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Name, email, and password are required",
+      });
       return;
     }
 
@@ -33,12 +40,10 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
     const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message: "User already exists with this email",
-        });
+      res.status(409).json({
+        success: false,
+        message: "User already exists with this email",
+      });
       return;
     }
 
@@ -54,31 +59,30 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
     const token = signToken(newUser._id.toString(), newUser.email);
 
-    res.status(201).json({
-      success: true,
-      message: "Account created successfully",
-      data: {
-        token,
-        user: {
-          id: newUser._id,
-          name: newUser.name,
-          email: newUser.email,
-          status: newUser.status,
-          createdAt: newUser.createdAt,
-        },
-      },
-    });
-  } catch (error: any) {
     res
-      .status(500)
+      .cookie("token", token, cookieOptions)
+      .status(201)
       .json({
-        success: false,
-        message: "Registration failed",
-        error: error.message,
+        success: true,
+        message: "Account created successfully",
+        data: {
+          user: {
+            id: newUser._id,
+            name: newUser.name,
+            email: newUser.email,
+            status: newUser.status,
+            createdAt: newUser.createdAt,
+          },
+        },
       });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      message: "Registration failed",
+      error: error.message,
+    });
   }
 };
-
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -114,20 +118,22 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
     const token = signToken(user._id.toString(), user.email);
 
-    res.status(200).json({
-      success: true,
-      message: "Logged in successfully",
-      data: {
-        token,
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          status: user.status,
-          createdAt: user.createdAt,
+    res
+      .cookie("token", token, cookieOptions)
+      .status(200)
+      .json({
+        success: true,
+        message: "Logged in successfully",
+        data: {
+          user: {
+            id: user._id,
+            name: user.name,
+            email: user.email,
+            status: user.status,
+            createdAt: user.createdAt,
+          },
         },
-      },
-    });
+      });
   } catch (error: any) {
     res
       .status(500)
@@ -140,7 +146,7 @@ export const getMe = async (
   res: Response,
 ): Promise<void> => {
   try {
-    const userId = req.user?.id;
+    const userId = req.userId || req.user?.id;
     if (!userId) {
       res.status(401).json({ success: false, message: "Unauthenticated" });
       return;
@@ -157,20 +163,24 @@ export const getMe = async (
       data: user,
     });
   } catch (error: any) {
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Failed to fetch user profile",
-        error: error.message,
-      });
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch user profile",
+      error: error.message,
+    });
   }
 };
 
-
 export const logout = async (_req: Request, res: Response): Promise<void> => {
-  res.status(200).json({
-    success: true,
-    message: "Logged out successfully",
-  });
+  res
+    .clearCookie("token", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    })
+    .status(200)
+    .json({
+      success: true,
+      message: "Logged out successfully",
+    });
 };
